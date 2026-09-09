@@ -1,0 +1,38 @@
+{
+  "//": "Copy the three hooks into your harness settings. The $HOME guard keeps",
+  "//2": "MEMEX out of sessions opened elsewhere on the machine. Point MEMEX at",
+  "//3": "your clone: replace $MEMEX_HOME below, or put bin/ on PATH.",
+
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$PWD\" in \"$HOME\"|\"$HOME\"/*) ;; *) exit 0;; esac; $MEMEX_HOME/bin/memex start"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$PWD\" in \"$HOME\"|\"$HOME\"/*) ;; *) exit 0;; esac; $MEMEX_HOME/bin/memex scribe --pending"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$PWD\" in \"$HOME\"|\"$HOME\"/*) ;; *) exit 0;; esac; exec $MEMEX_HOME/bin/memex pending --nudge"
+          }
+        ]
+      }
+    ]
+  }
+}

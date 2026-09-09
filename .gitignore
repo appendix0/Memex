@@ -1,0 +1,30 @@
+# Credentials and secrets — never committed
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+.netrc
+.npmrc
+.pypirc
+
+# Machine-local state: the recall index is a cache, the queue is machine state,
+# the lock is a runtime artifact. None of them are the record.
+state/*
+!state/.keep
+
+# The rendered Library page: derived, and would carry vault Books.
+# Rebuild it, never commit it.
+library.html
+
+# Caches and scratch
+__pycache__/
+*.pyc
+logs/
+.cache/
+.DS_Store
+
+# Harness wiring is machine-specific
+.claude/settings.local.json
+.mcp.json

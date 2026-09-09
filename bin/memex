@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# memex — runs the package from its repo regardless of cwd or PATH.
+#
+# This wrapper cds into the repo before exec, so the caller's directory is
+# lost by the time Python starts. `memex start` uses it to decide how much
+# context to inject, so carry it through explicitly — without this the check
+# answered "inside the repo" everywhere and the trim silently never applied.
+export MEMEX_CALLER_PWD="$PWD"
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+exec python3 -m memex "$@"

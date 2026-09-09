@@ -1,0 +1,47 @@
+#!/bin/bash
+# memex-daily — the 24-hour pass over the Library.
+#
+# The owner's design, in his words: "Every 24h the system looks for the whole
+# memex and checks if any other change is made. If the agent founds something
+# that could be recorded on the trail, it put it on the queue. Then whenever I
+# come back, in any session, the agent shows me the button for the trails
+# first."
+#
+# It reads the LIBRARY, never a transcript, and calls NO MODEL -- `trails.py`
+# has no model call in it at all, so this costs nothing to run and the daily
+# cadence is set by how fast the Library changes, not by a token budget. That is
+# the §4 division: scanning for the shape is mechanical, deciding what a tie
+# MEANS is the owner's, and the Button is where his half happens.
+#
+# It proposes and never writes. A tie whose reason is not already written down
+# somewhere is left in the backlog rather than turned into a writing assignment.
+#
+# Schedule it so the ties are waiting at the start of the owner's day, in the
+# owner's timezone -- cron runs in the system zone, so convert deliberately.
+set -u
+
+# Cron does not run a login shell, so it does not get the login PATH. A stale
+# interpreter earlier on a minimal PATH will be picked silently and run for
+# months. Set it absolutely rather than inheriting whatever cron provides.
+export PATH=/usr/local/bin:/usr/bin:/bin
+REPO="$(dirname "$(readlink -f "$0")")/.."
+MEMEX="$REPO/bin/memex"
+LOG="${XDG_DATA_HOME:-$HOME/.local/share}/memex/daily.log"
+mkdir -p "$(dirname "$LOG")"
+
+{
+  echo "=== $(date -Is) ==="
+  $MEMEX daily 2>&1
+  # The only hygiene it performs: an index the Library has outgrown. Everything
+  # else wrong with the machine is reported by `doctor` and left alone -- an
+  # unattended job that changes the shape of a box without leaving a receipt is
+  # indistinguishable from rot the next time someone looks.
+  if $MEMEX doctor 2>&1 | grep -q 'BAD.*index'; then
+    echo "  index stale — reindexing"
+    $MEMEX reindex 2>&1 | sed 's/^/  /'
+  fi
+  $MEMEX doctor 2>&1 | grep -E '^  BAD' | sed 's/^/  still /' || true
+  echo
+} >> "$LOG" 2>&1
+
+tail -n 1000 "$LOG" > "$LOG.trim" && mv "$LOG.trim" "$LOG"

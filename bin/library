@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# The Library, live in a browser. Loopback only -- see memex/page.py.
+# Reach it from another device by forwarding the port over ssh, never by binding 0.0.0.0.
+cd "$(dirname "$0")/.." || exit 1
+exec python3 -m memex.page --serve "$@"
