@@ -60,10 +60,13 @@ A tool server that exposes the Library to any client is what turns "the agent
 can read the vault" into "anything that speaks the protocol can read the vault",
 and that is the exact line `visibility: vault` exists to hold.
 
-MEMEX deliberately **ships no server**. The Library is reached by `memex recall`
-from a session opened in its folder, and by nothing else. If one is ever added:
-project scope only, and it must refuse vault Books **at the boundary** rather
-than trusting its caller.
+MEMEX ships **no tool server** — nothing exposes the Library to an agent or a
+connector, and the Library is reached by `memex recall` from a session opened in
+its folder. The one exception is `bin/library`, a read-only browser view bound
+to loopback and gated by a passphrase; reach it from another device by
+forwarding the port over ssh, never by binding 0.0.0.0. If a tool server is ever
+added: project scope only, and it must refuse vault Books **at the boundary**
+rather than trusting its caller.
 
 ## The transcript corpus
 

@@ -31,7 +31,6 @@ brought the child back inside the guard.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import re
@@ -42,7 +41,7 @@ from pathlib import Path
 
 from .edits import apply_all, parse_ops
 from .trails import all_trails
-from .library import ROOT, STATE, TZ, books, shelves
+from .library import ROOT, STATE, TZ, _try_lock, books, shelves
 
 PROMPT = ROOT / "scribe" / "PROMPT.md"
 RECEIPTS = STATE / "scribe-receipts.jsonl"
@@ -100,7 +99,7 @@ def enqueue(path: Path) -> None:
     else that would ever find it again.
     """
     STATE.mkdir(exist_ok=True)
-    with QUEUE.open("a") as f:
+    with QUEUE.open("a", encoding="utf-8") as f:
         f.write(f"{path}\n")
 
 
@@ -109,7 +108,7 @@ def drain_queue() -> list[Path]:
     if not QUEUE.exists():
         return []
     out, seen = [], set()
-    for line in QUEUE.read_text().splitlines():
+    for line in QUEUE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line in seen:
             continue
@@ -135,17 +134,20 @@ def single_run(wait_seconds: float = 0.0):
     """
     STATE.mkdir(exist_ok=True)
     lock = STATE / "scribe.lock"
-    fh = lock.open("w")
+    # "a+", not "w": on Windows the byte-range lock is mandatory, so a second
+    # process opening with "w" would fail on the truncate with a sharing
+    # violation instead of reporting Busy. Truncate after we hold it.
+    fh = lock.open("a+", encoding="utf-8")
     try:
         deadline = time.monotonic() + max(0.0, wait_seconds)
         while True:
-            try:
-                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if _try_lock(fh):
                 break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise Busy(f"another Scribe holds {lock}")
-                time.sleep(3)
+            if time.monotonic() >= deadline:
+                raise Busy(f"another Scribe holds {lock}")
+            time.sleep(3)
+        fh.seek(0)
+        fh.truncate()
         fh.write(f"{os.getpid()} {datetime.now(TZ).isoformat(timespec='seconds')}\n")
         fh.flush()
         yield
@@ -347,7 +349,7 @@ def run(transcript: Path, dry: bool = False, start: int | None = None) -> dict:
         conversation = conversation[-_SPOKEN_MAX:]
         from .criterion import render as _criterion
         prompt = (
-            PROMPT.read_text()
+            PROMPT.read_text(encoding="utf-8")
             + "\n\n---\n\n" + _criterion()
             + "\n\nYou cannot press the Button -- nobody is here to answer it.\n"
               "Apply the six triggers anyway: what passes them is what you\n"
@@ -426,7 +428,7 @@ def run(transcript: Path, dry: bool = False, start: int | None = None) -> dict:
     receipt["dry"] = dry
     if not dry:
         STATE.mkdir(exist_ok=True)
-        with RECEIPTS.open("a") as f:
+        with RECEIPTS.open("a", encoding="utf-8") as f:
             f.write(json.dumps(receipt, ensure_ascii=False) + "\n")
         if receipt.get("files_written"):
             # A record nobody can find is not a record. Search reads a cached
@@ -453,7 +455,7 @@ def consumed() -> dict[str, int]:
         return {}
     counted: dict[str, int] = {}   # receipts that recorded where they stopped
     legacy: set[str] = set()       # receipts that did not
-    for line in RECEIPTS.read_text().splitlines():
+    for line in RECEIPTS.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -480,7 +482,7 @@ def _attempts(segment: str) -> int:
     if not RECEIPTS.exists():
         return 0
     n = 0
-    for line in RECEIPTS.read_text().splitlines():
+    for line in RECEIPTS.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:

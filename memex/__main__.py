@@ -64,7 +64,25 @@ def _hook_payload() -> Path | None:
     return path if path.is_file() else None
 
 
+def _utf8_console() -> None:
+    """Make the console take UTF-8 whatever the platform thinks the locale is.
+
+    Books hold em-dashes, arrows and Korean, and a Windows console defaults to
+    cp949 or cp1252. Printing a Book there raised UnicodeEncodeError and took
+    the command down with it -- the read side is fixed by passing encoding= at
+    every open, but the write side is the terminal, and only this reaches it.
+    `errors="replace"` because a mangled character is a better outcome than a
+    traceback when someone is reading their own Library.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass          # redirected to something that cannot be reconfigured
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_console()
     ap = argparse.ArgumentParser(prog="memex", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)

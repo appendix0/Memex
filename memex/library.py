@@ -1,13 +1,60 @@
 """The Library: every Book under brain/, read straight from disk."""
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import yaml
+
+try:
+    import fcntl                       # POSIX
+except ModuleNotFoundError:           # Windows
+    fcntl = None
+    import msvcrt
+
+
+def _try_lock(fh) -> bool:
+    """Take an exclusive lock on an open handle without blocking.
+
+    Two calls because the platforms share none. Both release when the handle
+    closes. It lives here rather than in scribe.py because scribe.py imported
+    fcntl at module scope, which made importing anything downstream of it fail
+    outright on Windows.
+    """
+    try:
+        if fcntl is not None:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        return True
+    except OSError:
+        return False
+
+
+@contextlib.contextmanager
+def file_lock(path: Path, wait_seconds: float = 5.0, poll: float = 0.05):
+    """Hold `path` exclusively for the block. Raises TimeoutError if it cannot.
+
+    "a+", not "w": on Windows the byte-range lock is mandatory, so a second
+    process opening with "w" would fail on the truncate rather than wait.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = path.open("a+", encoding="utf-8")
+    try:
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while not _try_lock(fh):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"another process holds {path}")
+            time.sleep(poll)
+        yield fh
+    finally:
+        fh.close()
 
 # MEMEX_ROOT exists so the CLI can be pointed at a throwaway Library. Without
 # it every command-line path was untestable: the tests drove apply_op directly

@@ -52,14 +52,31 @@ def report(brief: bool = False) -> tuple[str, bool]:
     lines.append(l); bad |= not ok
 
     # 3. the index — a Book written and not reindexed cannot be found
-    from .recall import INDEX, INDEX_VERSION, _load
+    from .recall import INDEX, INDEX_VERSION, _load, book_hash
     idx = _load()
-    stale = [b.slug for b in bs if b.slug not in idx]
-    l, ok = _check("search index current",
-                   idx.get("__version__") == INDEX_VERSION and not stale,
-                   f"{len(stale)} unindexed; run `memex reindex`" if stale else
-                   ("index format is old; run `memex reindex`"
-                    if idx.get("__version__") != INDEX_VERSION else ""))
+    # Three ways to be out of date, and the first version of this check saw
+    # only one of them. Absent is the obvious case. CHANGED is the case a
+    # membership test cannot see: the Book is in the index under its old text,
+    # so it is found by its old words and not its new ones. UNEMBEDDED is the
+    # case that made this urgent -- one recall run with the embedding server
+    # down used to write every chunk with a null vector beside a valid hash,
+    # and this check called the result current for as long as it lasted.
+    missing = [b.slug for b in bs if b.slug not in idx]
+    changed = [b.slug for b in bs
+               if b.slug in idx and idx[b.slug].get("hash") != book_hash(b)]
+    unembedded = [b.slug for b in bs
+                  if b.slug in idx and not idx[b.slug].get("embedded")]
+    detail = ""
+    if idx.get("__version__") != INDEX_VERSION:
+        detail = "index format is old; run `memex reindex`"
+    elif missing or changed:
+        parts = ([f"{len(missing)} unindexed"] if missing else []) + \
+                ([f"{len(changed)} changed since indexing"] if changed else [])
+        detail = ", ".join(parts) + "; run `memex reindex`"
+    elif unembedded:
+        detail = (f"{len(unembedded)} Book(s) indexed without vectors — recall "
+                  "is keyword-only for them; start Ollama and `memex reindex`")
+    l, ok = _check("search index current", not detail, detail)
     lines.append(l); bad |= not ok
 
     # 4. nothing unagreed sitting in a Book
@@ -69,9 +86,9 @@ def report(brief: bool = False) -> tuple[str, bool]:
 
     # 5. the prompt must offer only ops something handles
     prompt = set(re.findall(r'\{"op":"(\w+)"',
-                            (ROOT / "scribe" / "PROMPT.md").read_text()))
+                            (ROOT / "scribe" / "PROMPT.md").read_text(encoding="utf-8")))
     handled = set(re.findall(r'kind (?:==|in \()\s*[("]([a-z_]+)',
-                             (ROOT / "memex" / "edits.py").read_text()))
+                             (ROOT / "memex" / "edits.py").read_text(encoding="utf-8")))
     handled |= {"trail", "timeline", "observe"}
     orphan = sorted(prompt - handled)
     l, ok = _check("prompt offers only ops we accept", not orphan, ", ".join(orphan))

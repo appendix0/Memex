@@ -19,7 +19,7 @@ def _memory() -> str:
     p = ROOT / "MEMORY.md"
     if not p.exists():
         return ""
-    text = p.read_text()
+    text = p.read_text(encoding="utf-8")
     keep = []
     for head in ("Standing rules learned from corrections", "Active context", "Open commitments"):
         i = text.find(f"## {head}")
@@ -49,7 +49,7 @@ def _scribe_report(days: int = 7) -> str:
     since = datetime.now(TZ) - timedelta(days=days)
     observed = agreed = steps = opened = closed = runs = 0
     touched: set[str] = set()
-    for line in RECEIPTS.read_text().splitlines():
+    for line in RECEIPTS.read_text(encoding="utf-8").splitlines():
         try:
             r = json.loads(line)
         except json.JSONDecodeError:

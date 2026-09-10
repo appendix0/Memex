@@ -29,7 +29,12 @@ real runs, 37 called the model and wrote nothing, and a full day of work
 produced 3 facts and 1 trail step. The owner: *"unless I agree on everything, nothing
 is updated on the book. This is not Bush's design."* He is right.
 
-**So: be generous with the store. Be strict with the trail.**
+**So: be generous with the queue. Be strict with the trail.**
+
+The store here is `state/candidates.jsonl`, not a section of a Book. Books held
+an `## Observed` layer once; they no longer do, and `memex doctor` now reports a
+Book containing one as a fault. Generous means *notice readily* — it does not
+mean write, and the queue caps you at three a run and ten outstanding.
 
 ---
 
@@ -182,11 +187,17 @@ correctly in a year:
 > Not: "the agent noticed the README was stale."
 > But: **"The README links to `scripts/bootstrap/`, which was deleted in commit a1b2c3d."**
 
-### You cannot write a Book. At all.
+### You cannot write a Book's facts. At all.
 
 There is no op that puts text above the line in a Book, and none that creates
 one. `fact` and `new` are refused for you in code, not discouraged in prose —
 `edits.py` raises before it looks at anything else you sent.
+
+What you *may* write is the append-only matter below the line — `trail` and
+`timeline`, and a trail file's `## Route` — which is the subject of the next
+section. Nothing there can overwrite a fact, and a trail rewrite that drops an
+existing step is refused. Stating the ban more broadly than the code enforces it
+is the failure this document exists to prevent, so it is stated exactly.
 
 This is not distrust; it is arithmetic. A Book holds fact, a fact needs the owner's
 word, and **you run after the session has ended, with nobody to ask.** An

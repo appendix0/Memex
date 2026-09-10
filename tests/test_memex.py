@@ -1338,6 +1338,341 @@ def test_recall_facets():
         R._load, R._embed = real_load, real_embed
 
 
+
+# ---------------------------------------------------------------------------
+# Portability and index integrity. Every case below is something a review found
+# by running this on Windows, or by pulling the plug on the embedding server.
+# ---------------------------------------------------------------------------
+
+
+def test_the_lock_is_portable():
+    """scribe.py imported fcntl at module scope, so the package was Unix-only.
+
+    Nothing subtle happened on Windows: `import memex.session` raised
+    ModuleNotFoundError, `memex start` died, and the whole of this file failed
+    at import, so 0 of these checks ran on the platform that needed them most.
+    """
+    print("\nthe lock — one behaviour, two platforms")
+    import ast
+    from memex import library as L
+
+    src = ast.parse((ROOT / "memex" / "scribe.py").read_text(encoding="utf-8"))
+    top = [n for n in src.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+    names = {a.name for n in top if isinstance(n, ast.Import) for a in n.names}
+    check("scribe.py no longer imports fcntl at module scope", "fcntl" not in names)
+    check("the lock lives in library.py, which both users import",
+          hasattr(L, "_try_lock") and hasattr(L, "file_lock"))
+
+    # and it still excludes, which is the only reason it exists
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "x.lock"
+        with L.file_lock(p, wait_seconds=0):
+            try:
+                with L.file_lock(p, wait_seconds=0):
+                    check("a second holder is refused", False, "both got in")
+            except TimeoutError:
+                check("a second holder is refused", True)
+        with L.file_lock(p, wait_seconds=0):
+            check("the lock is retakeable once released", True)
+
+
+def test_every_text_file_is_read_as_utf8():
+    """No text I/O may rely on the platform's locale encoding.
+
+    On Korean Windows (cp949) reading a Book raised UnicodeDecodeError. On
+    Western Windows (cp1252) the same bytes DECODE, into wrong text -- and
+    doctor's prompt/edits cross-check then parses mojibake and reports a clean
+    bill. The silent case is why this is a test and not a habit.
+    """
+    print("\nencoding — never the platform's guess")
+    import ast
+    bad = []
+    for py in sorted((ROOT / "memex").glob("*.py")):
+        tree = ast.parse(py.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not isinstance(fn, ast.Attribute):
+                continue
+            if fn.attr not in ("read_text", "write_text", "open"):
+                continue
+            if fn.attr == "open":
+                mode = node.args[0].value if (node.args and
+                       isinstance(node.args[0], ast.Constant)) else ""
+                if "b" in str(mode):
+                    continue          # binary: an encoding would be wrong
+            if not any(k.arg == "encoding" for k in node.keywords):
+                bad.append(f"{py.name}:{node.lineno} .{fn.attr}()")
+    check("every text read and write names its encoding", not bad,
+          ", ".join(bad[:4]))
+
+    from memex.__main__ import _utf8_console
+    check("the console is reconfigured for output too", callable(_utf8_console))
+
+
+def test_the_index_cannot_lie_about_being_embedded():
+    """One recall run with Ollama down used to poison the index permanently.
+
+    reindex() wrote every chunk with vec=None NEXT TO A VALID HASH. When the
+    server came back, every Book matched its hash and was skipped as unchanged,
+    so the Library stayed on keyword matching until a Book's text happened to
+    change -- and `doctor` called the index current the whole time.
+    """
+    print("\nthe index — a hash may not outrun its vectors")
+    import tempfile, shutil, json as _json
+    from memex import recall as R
+
+    real_embed, real_index, real_state, real_down = R._embed, R.INDEX, R.STATE, R._down
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        R.INDEX, R.STATE = tmp / "i.json", tmp
+        R._embed = lambda t: None            # the server is down
+        R._down = False
+        R.reindex()
+        idx = _json.loads(R.INDEX.read_text(encoding="utf-8"))
+        recs = [k for k in idx if k != "__version__"]
+        check("nothing is marked embedded when the server is down",
+              recs and not any(idx[k].get("embedded") for k in recs))
+        check("the chunk TEXTS are still written, so keyword search works",
+              sum(len(idx[k]["chunks"]) for k in recs) > 0)
+
+        R._embed = lambda t: [0.1] * 8       # the server comes back
+        changed, same = R.reindex()
+        check("every Book is re-embedded once the server returns",
+              changed == len(recs) and same == 0, f"{changed}/{same}")
+        idx = _json.loads(R.INDEX.read_text(encoding="utf-8"))
+        check("no null vector survives",
+              not [c for k in recs for c in idx[k]["chunks"] if c["vec"] is None])
+        changed2, same2 = R.reindex()
+        check("and caching still works after that",
+              changed2 == 0 and same2 == len(recs), f"{changed2}/{same2}")
+    finally:
+        R._embed, R.INDEX, R.STATE, R._down = real_embed, real_index, real_state, real_down
+        shutil.rmtree(tmp)
+
+
+def test_the_embedding_server_is_probed_once():
+    """_embed used to retry per chunk: 426 attempts on a real Library.
+
+    Refused connections are instant on Linux, which is why this looked free.
+    On Windows a closed localhost port costs a retry, and a review measured
+    over two minutes of apparent hang before the keyword fallback appeared.
+    """
+    print("\nthe embedding server — one probe, not one per chunk")
+    import io, contextlib
+    from memex import recall as R
+
+    calls = {"n": 0}
+    real_urlopen, real_down = R.urllib.request.urlopen, R._down
+
+    def refuse(*a, **k):
+        calls["n"] += 1
+        raise OSError("connection refused")
+    try:
+        R.urllib.request.urlopen = refuse
+        R._down = False
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            for i in range(200):
+                R._embed(f"chunk {i}")
+        check("200 calls cost one connection attempt", calls["n"] == 1, str(calls["n"]))
+        check("and the fallback is announced, not silent",
+              len(buf.getvalue().strip().splitlines()) == 1, buf.getvalue()[:60])
+    finally:
+        R.urllib.request.urlopen, R._down = real_urlopen, real_down
+
+
+def test_a_claim_closes_its_chunk():
+    """Splitting in front of a long paragraph is only half the split.
+
+    The paragraph then packed with every short paragraph that FOLLOWED it --
+    34 of 60 chunks in this repository's own Library, the worst holding nine
+    paragraphs in one vector. The claim still shared a vector with its
+    neighbours, which is the defect the split was added to end.
+    """
+    print("\nchunking — a claim closes its chunk as well as opening it")
+    from memex.recall import _chunks, STANDALONE, GLUE
+    from memex.library import Book
+
+    claim = "C" * 240 + " the claim itself."
+    body = f"{claim}\n\nshort one.\n\nshort two.\n\nshort three.\n"
+    bk = Book(slug="projects/x", path=Path("/dev/null"), title="X",
+              type="project", visibility="world", frontmatter={}, body=body)
+    texts = [c for c, _ in _chunks(bk)]
+    holding = [t for t in texts if claim[:40] in t][0]
+    check("the claim does not carry the paragraphs after it",
+          "short one." not in holding, holding[-40:])
+
+    # a heading is not a claim, and must not become a chunk of its own
+    body2 = f"## A heading\n\n{claim}\n"
+    bk2 = Book(slug="projects/y", path=Path("/dev/null"), title="Y",
+               type="project", visibility="world", frontmatter={}, body=body2)
+    texts2 = [c for c, _ in _chunks(bk2)]
+    check("a heading rides with the claim it introduces",
+          not any(t.strip() == "## A heading" for t in texts2), str(texts2[:1]))
+    check("the glue threshold is explicit", GLUE < STANDALONE, f"{GLUE}/{STANDALONE}")
+
+
+def test_recall_matches_a_korean_particle():
+    """Korean glues the particle to the noun, so token equality is the wrong test.
+
+    Measured: "컨트롤러가" scored 0.0 against text reading "컨트롤러는" -- the same
+    noun, a different particle -- while the English equivalent scored 0.98.
+    """
+    print("\nkeyword fallback — a noun keeps its meaning when the particle changes")
+    from memex.recall import _keyword
+
+    same = _keyword("컨트롤러가 어떻게 되었나", "컨트롤러는 밸브를 닫았다")
+    other = _keyword("컨트롤러가", "온도와 습도를 측정한다")
+    english = _keyword("controller valve", "the controller closed the valve")
+    check("the same noun matches across particles", same > 0, f"{same:.3f}")
+    check("an unrelated sentence still scores zero", other == 0, f"{other:.3f}")
+    check("English is unaffected", english > 0.9, f"{english:.3f}")
+
+
+def test_doctor_sees_a_changed_book():
+    """`stale = [b for b in books if b.slug not in idx]` is a membership test.
+
+    It cannot see a Book that is IN the index under its old text -- found by
+    its old words, not its new ones -- and it could not see the null-vector
+    index at all.
+    """
+    print("\ndoctor — current means current, not present")
+    import tempfile, shutil, json as _json
+    from memex import recall as R
+    from memex.doctor import report
+
+    real_embed, real_index, real_state = R._embed, R.INDEX, R.STATE
+    tmp = Path(tempfile.mkdtemp())
+
+    def index_line():
+        out, _ = report()
+        return [l for l in out.splitlines() if "search index" in l][0]
+
+    try:
+        R.INDEX, R.STATE = tmp / "i.json", tmp
+        R._embed = lambda t: [0.1] * 8
+        R.reindex()
+        check("a fresh index reads ok", "ok" in index_line())
+
+        idx = _json.loads(R.INDEX.read_text(encoding="utf-8"))
+        slug = [k for k in idx if k != "__version__"][0]
+        idx[slug]["hash"] = "0" * 16
+        R.INDEX.write_text(_json.dumps(idx), encoding="utf-8")
+        check("an edited Book is reported", "BAD" in index_line(), index_line())
+
+        R.reindex()
+        idx = _json.loads(R.INDEX.read_text(encoding="utf-8"))
+        idx[slug]["embedded"] = False
+        R.INDEX.write_text(_json.dumps(idx), encoding="utf-8")
+        line = index_line()
+        check("a Book indexed without vectors is reported",
+              "BAD" in line and "keyword-only" in line, line)
+    finally:
+        R._embed, R.INDEX, R.STATE = real_embed, real_index, real_state
+        shutil.rmtree(tmp)
+
+
+def test_a_trail_never_loses_a_step():
+    """`trail_file` is the one op that replaces a whole file, and it checked nothing.
+
+    Every other write path enforces its own invariant in code -- `fact` refuses
+    to shorten a Book without an exact `replaces`. A model rewriting a Route to
+    add step 4 could drop step 2 and nothing would notice, against a document
+    that promises "a wrong step is answered by a later step, never rewritten
+    away".
+    """
+    print("\ntrails — append-only, enforced")
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _fake_library(root)
+        seed_classification(root / "brain")
+        old_root = os.environ.get("MEMEX_ROOT")
+        os.environ["MEMEX_ROOT"] = str(root)
+        try:
+            import importlib
+            from memex import library as L, edits as ED
+            importlib.reload(L); importlib.reload(ED)
+            was = (root / "brain" / "trails" / "t.md").read_text(encoding="utf-8")
+            check("the fixture has a step to lose", len(ED._steps(was)) == 1)
+
+            added = was.rstrip("\n") + (
+                "\n\n2. **And then the rail depot took the freight.** — 2026-05-03\n"
+                "   Which is why the schedule was rebuilt.\n   \u2192 [[projects/joined]]\n")
+            ED.apply_op({"op": "trail_file", "book": "trails/t", "body": added},
+                        dry=True, created=set(), actor="scribe")
+            check("appending a step is allowed", True)
+
+            dropped = added.replace(
+                "1. **The harbour closed.** — 2026-05-02\n   It forced everything after it.\n"
+                "   \u2192 [[projects/onroute]]\n", "")
+            try:
+                ED.apply_op({"op": "trail_file", "book": "trails/t", "body": dropped},
+                            dry=True, created=set(), actor="scribe")
+                check("dropping a step is refused", False, "it was accepted")
+            except ED.Refused as e:
+                check("dropping a step is refused", "append-only" in str(e), str(e)[:60])
+        finally:
+            if old_root is None:
+                os.environ.pop("MEMEX_ROOT", None)
+            else:
+                os.environ["MEMEX_ROOT"] = old_root
+            import importlib
+            from memex import library as L, edits as ED
+            importlib.reload(L); importlib.reload(ED)
+
+
+def test_the_queue_survives_two_writers():
+    """The Scribe's lock guards scribe-queue.txt. It never guarded this file.
+
+    candidates.jsonl is read whole, changed, and written whole. A live session
+    running `memex note` and the background Scribe adding in the same instant
+    each wrote a file computed from the state before the other, and one entry
+    vanished with nothing logged. Measured unlocked: 37 of 40 writes lost.
+    """
+    print("\nthe candidate queue — two writers, no losses")
+    import tempfile, shutil, threading
+    from memex import library as L, candidates as C
+
+    real = (L.STATE, C.STATE, C.QUEUE, C.LOCK, C.MAX_PENDING)
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        L.STATE = C.STATE = tmp
+        C.QUEUE, C.LOCK = tmp / "q.jsonl", tmp / "q.lock"
+        C.MAX_PENDING = 100
+        n = 24
+        barrier = threading.Barrier(n)
+
+        def w(i):
+            barrier.wait()
+            C.add("projects/greenhouse",
+                  f"alpha{i}zz beta{i}yy gamma{i}xx delta{i}ww", "t")
+        ts = [threading.Thread(target=w, args=(i,)) for i in range(n)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        check(f"{n} concurrent adds all land", len(C.pending()) == n,
+              str(len(C.pending())))
+
+        C.QUEUE.unlink(missing_ok=True)
+        C.MAX_PENDING = 6
+        barrier2 = threading.Barrier(n)
+
+        def w2(i):
+            barrier2.wait()
+            C.add("projects/greenhouse",
+                  f"kappa{i}zz lambda{i}yy mu{i}xx nu{i}ww", "t")
+        ts = [threading.Thread(target=w2, args=(i,)) for i in range(n)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        check("and the ceiling still holds under contention",
+              len(C.pending()) == 6, str(len(C.pending())))
+    finally:
+        L.STATE, C.STATE, C.QUEUE, C.LOCK, C.MAX_PENDING = real
+        shutil.rmtree(tmp)
+
 if __name__ == "__main__":
     for t in (test_edits, test_trust_boundary, test_wrapper_filter,
               test_prune_scope, test_candidates, test_consumed, test_incremental_read,
@@ -1351,7 +1686,15 @@ if __name__ == "__main__":
               test_two_buttons, test_a_reason_is_never_invented,
               test_criterion_is_carried,
               test_stop_hook_installed, test_library,
-              test_recall_facets):
+              test_recall_facets,
+              test_the_lock_is_portable, test_every_text_file_is_read_as_utf8,
+              test_the_index_cannot_lie_about_being_embedded,
+              test_the_embedding_server_is_probed_once,
+              test_a_claim_closes_its_chunk,
+              test_recall_matches_a_korean_particle,
+              test_doctor_sees_a_changed_book,
+              test_a_trail_never_loses_a_step,
+              test_the_queue_survives_two_writers):
         t()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     if FAIL:

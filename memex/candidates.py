@@ -24,9 +24,23 @@ import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
-from .library import STATE, TZ
+from .library import STATE, file_lock, TZ
 
 QUEUE = STATE / "candidates.jsonl"
+LOCK = STATE / "candidates.lock"
+
+
+def _held(wait: float = 5.0):
+    """Hold the queue for a read-modify-write.
+
+    Every mutator below reads the whole file, changes one entry and writes the
+    whole file back. Unlocked, a live session running `memex note` and the
+    background Scribe adding a candidate in the same instant each write a file
+    computed from the state before the other -- and one of the two entries is
+    gone, with nothing logged. The Scribe's own lock never covered this: it
+    guards scribe-queue.txt, a different file.
+    """
+    return file_lock(LOCK, wait_seconds=wait)
 STALE_DAYS = 14      # older than this and nobody was ever going to answer it
 MAX_PER_SESSION = 3  # what one scribe run may add. The owner, 2026-09-08: the queue
                      # is a buffer, not a backlog -- 17 unanswered questions
@@ -85,7 +99,7 @@ def _read() -> list[Candidate]:
     if not QUEUE.exists():
         return []
     out = []
-    for line in QUEUE.read_text().splitlines():
+    for line in QUEUE.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -98,7 +112,7 @@ def _read() -> list[Candidate]:
 def _write(items: list[Candidate]) -> None:
     STATE.mkdir(exist_ok=True)
     QUEUE.write_text("".join(json.dumps(asdict(c), ensure_ascii=False) + "\n"
-                             for c in items))
+                             for c in items), encoding="utf-8")
 
 
 def room() -> int:
@@ -113,21 +127,24 @@ def add(book: str, text: str, source: str = "scribe") -> Candidate | None:
     Callers that need to tell those apart check room() first.
     """
     text = " ".join(text.split())
-    if room() <= 0:
-        return None
-    items = _read()
-    bag = lambda t: {w for w in t.lower().split() if len(w) > 3}
-    new = bag(text)
-    for c in items:
-        if c.book != book:
-            continue
-        old = bag(c.text)
-        if old and len(new & old) / max(len(new | old), 1) >= 0.6:
+    with _held():
+        items = _read()
+        # room() re-read the file outside the lock; this is the same test on
+        # the snapshot we hold, stale entries excluded exactly as room() does.
+        if len([c for c in items if c.age_days < STALE_DAYS]) >= MAX_PENDING:
             return None
-    c = Candidate(uuid.uuid4().hex[:8], book, text,
-                  datetime.now(TZ).isoformat(timespec="seconds"), source)
-    items.append(c)
-    _write(items)
+        bag = lambda t: {w for w in t.lower().split() if len(w) > 3}
+        new = bag(text)
+        for c in items:
+            if c.book != book:
+                continue
+            old = bag(c.text)
+            if old and len(new & old) / max(len(new | old), 1) >= 0.6:
+                return None
+        c = Candidate(uuid.uuid4().hex[:8], book, text,
+                      datetime.now(TZ).isoformat(timespec="seconds"), source)
+        items.append(c)
+        _write(items)
     return c
 
 
@@ -138,17 +155,18 @@ def add_step(trail: str, book: str, via: str, date: str, why: str) -> Candidate 
     reasons for the same join are the same proposal, so word-overlap dedupe
     would be the wrong test here.
     """
-    if room() <= 0:
-        return None
-    items = _read()
-    for c in items:
-        if c.kind == "step" and c.trail == trail and c.book == book:
+    with _held():
+        items = _read()
+        if len([c for c in items if c.age_days < STALE_DAYS]) >= MAX_PENDING:
             return None
-    c = Candidate(uuid.uuid4().hex[:8], book, " ".join(why.split()),
-                  datetime.now(TZ).isoformat(timespec="seconds"),
-                  source="daily", kind="step", trail=trail, via=via, date=date)
-    items.append(c)
-    _write(items)
+        for c in items:
+            if c.kind == "step" and c.trail == trail and c.book == book:
+                return None
+        c = Candidate(uuid.uuid4().hex[:8], book, " ".join(why.split()),
+                      datetime.now(TZ).isoformat(timespec="seconds"),
+                      source="daily", kind="step", trail=trail, via=via, date=date)
+        items.append(c)
+        _write(items)
     return c
 
 
@@ -170,10 +188,11 @@ def prune() -> int:
     the same nag by another name. Nothing is lost that was ever a fact: the
     Library is unchanged either way.
     """
-    items = _read()
-    keep = [c for c in items if c.age_days < STALE_DAYS]
-    if len(keep) != len(items):
-        _write(keep)
+    with _held():
+        items = _read()
+        keep = [c for c in items if c.age_days < STALE_DAYS]
+        if len(keep) != len(items):
+            _write(keep)
     return len(items) - len(keep)
 
 
@@ -184,11 +203,12 @@ def pending(include_stale: bool = False) -> list[Candidate]:
 
 def take(cid: str) -> Candidate | None:
     """Remove and return one, by id or unique prefix."""
-    items = _read()
-    hit = [c for c in items if c.id == cid or c.id.startswith(cid)]
-    if len(hit) != 1:
-        return None
-    _write([c for c in items if c.id != hit[0].id])
+    with _held():
+        items = _read()
+        hit = [c for c in items if c.id == cid or c.id.startswith(cid)]
+        if len(hit) != 1:
+            return None
+        _write([c for c in items if c.id != hit[0].id])
     return hit[0]
 
 

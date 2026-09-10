@@ -208,7 +208,7 @@ def check_or_enrol(passphrase: str) -> bool:
     """
     if VERIFIER.exists():
         try:
-            rec = json.loads(VERIFIER.read_text())
+            rec = json.loads(VERIFIER.read_text(encoding="utf-8"))
             want = base64.b64decode(rec["hash"])
             got = _verifier_for(passphrase, base64.b64decode(rec["salt"]))
         except (ValueError, KeyError):
@@ -221,7 +221,7 @@ def check_or_enrol(passphrase: str) -> bool:
         "salt": base64.b64encode(salt).decode(),
         "hash": base64.b64encode(_verifier_for(passphrase, salt)).decode(),
         "iterations": VERIFY_ITERATIONS,
-    }))
+    }), encoding="utf-8")
     VERIFIER.chmod(0o600)
     return True
 

@@ -240,8 +240,15 @@ Capture is profligate; **admission is strict**. That asymmetry is the design.
 Transcripts keep everything and live outside the Library. What enters a Book is
 decided one sentence at a time.
 
-**Nothing enters a Book except through the Button** — the moment the owner is
-shown one exact sentence and one exact destination, and says yes:
+"Above the line" is the whole of it in practice, and the qualifier is not a
+loophole: a Book's **facts** are the Button's, and the appendices below them —
+`## Trail` and `## Timeline` — are append-only and may be written by the
+background Scribe without asking. `edits.py` refuses `fact` and `new` from the
+Scribe in code, not in prose. A trail file is append-only too: a rewrite that
+drops an existing step is refused rather than merged.
+
+**Nothing enters a Book above the line except through the Button** — the moment
+the owner is shown one exact sentence and one exact destination, and says yes:
 
 ```
 Should I write "The scheduler waters on a trailing-hour median, not the
@@ -296,12 +303,12 @@ fine.
 ## What is in this repository
 
 ```
-memex/          the system — 13 modules, no dependency beyond PyYAML
+memex/          the system — 13 modules; PyYAML, and two more for `library`
 bin/            memex, memex-daily, library
 brain/          an EXAMPLE Library: 10 Books on 9 shelves, plus the rules
 skills/         the write-path an agent follows
 scribe/         the prompt the background reader runs under
-tests/          1,349 lines, ~274 checks, no network required
+tests/          1,702 lines, ~301 checks, no network required
 ```
 
 The rules in `brain/` are the transferable part: **`RESOLVER.md`** (the decision
@@ -319,11 +326,14 @@ that decide it.
 ## Quickstart
 
 Python 3.11+ and PyYAML. Semantic recall additionally wants a local
-[Ollama](https://ollama.com); without it, recall falls back to keyword matching.
+[Ollama](https://ollama.com); without it, recall falls back to keyword matching
+and says so on stderr. `bin/library`, the browser view, additionally needs
+`markdown` and `cryptography` — the rest of the system runs without them.
 
 ```bash
 git clone <this repo> memex && cd memex
 pip install pyyaml
+pip install markdown cryptography   # only for ./bin/library
 ollama pull bge-m3            # optional, for semantic recall
 
 export MEMEX_TZ=Europe/Berlin # dates in Books use the owner's day

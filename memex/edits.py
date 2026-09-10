@@ -136,6 +136,15 @@ def _undate(text: str) -> str:
     return text
 
 
+def _steps(text: str) -> set[str]:
+    """The headline of every step on a trail's Route.
+
+    A step is `N. **the headline** — date`. The headline is what identifies it;
+    renumbering and reflowing are fine, losing one is not.
+    """
+    return set(re.findall(r"^\s*\d+\.\s+\*\*(.+?)\*\*", text, re.M))
+
+
 def _visibility(text: str) -> str:
     """The visibility a Book's frontmatter actually declares.
 
@@ -282,6 +291,19 @@ def apply_op(op: dict, dry: bool = False, created: set[str] | None = None,
             was = path.read_text(encoding="utf-8")
             if _visibility(was) == "vault" and _visibility(body) != "vault":
                 raise Refused(f"{slug} is vault; the replacement drops the label")
+            # A trail is append-only: "a wrong step is answered by a later
+            # step, never rewritten away" (scribe/PROMPT.md). Every other write
+            # path enforces its own invariant in code -- `fact` refuses to
+            # shorten a Book without an exact `replaces` -- and this one, the
+            # only op that replaces a whole file, enforced nothing. A model
+            # rewriting a Route to add step 4 could drop step 2 and no check
+            # would notice. It is the steps that are protected, not the byte
+            # count, so fixing a typo or closing the trail still goes through.
+            lost = _steps(was) - _steps(body)
+            if lost:
+                raise Refused(
+                    f"{slug} is append-only; the replacement drops "
+                    f"{len(lost)} existing step(s): {sorted(lost)[:2]}")
         if not dry:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(body.rstrip("\n") + "\n", encoding="utf-8")

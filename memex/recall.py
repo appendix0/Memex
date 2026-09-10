@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import re
+import sys
 import urllib.request
 from dataclasses import dataclass
 
@@ -19,6 +20,7 @@ MODEL = "bge-m3"
 INDEX = STATE / "recall-index.json"
 CHUNK = 1200          # chars; a Book section is usually under this
 STANDALONE = 200      # a paragraph this long is a claim, and gets its own vector
+GLUE = 60             # shorter than this is a heading: it rides with what follows
 
 
 @dataclass
@@ -31,7 +33,19 @@ class Hit:
     kind: str = "agreed"      # agreed | observed | appendix
 
 
+# Set the first time the server does not answer, and never retried in this
+# process. Without it a reindex with Ollama down calls _embed once per chunk --
+# 426 attempts on a real Library -- each paying the platform's connect cost.
+# Refused connections are instant on Linux, so this looked free; on Windows a
+# closed localhost port costs a SYN retry and a review measured over two
+# minutes of apparent hang before the keyword fallback appeared.
+_down = False
+
+
 def _embed(text: str) -> list[float] | None:
+    global _down
+    if _down:
+        return None
     req = urllib.request.Request(
         f"{OLLAMA}/api/embeddings",
         data=json.dumps({"model": MODEL, "prompt": text}).encode(),
@@ -40,7 +54,10 @@ def _embed(text: str) -> list[float] | None:
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.load(r).get("embedding")
-    except Exception:
+    except Exception as e:
+        _down = True
+        print(f"memex: no embedding server at {OLLAMA} ({e}); "
+              "recall is falling back to keyword matching", file=sys.stderr)
         return None
 
 
@@ -86,6 +103,13 @@ def _chunks(b: Book) -> list[tuple[str, str]]:
     offset = len(b.title) + 2
     parts: list[tuple[str, str]] = []
     cur, cur_at = "", offset
+
+    def flush() -> None:
+        nonlocal cur, cur_at
+        if cur.strip():
+            parts.append((cur.strip(), _kind_at(b.body, max(cur_at - offset, 0))))
+        cur, cur_at = "", offset
+
     for para in re.split(r"\n\s*\n", text):
         # A fact must never share a vector with an unrelated fact. Facts are
         # appended to a Book as separate paragraphs, and packing several into
@@ -102,17 +126,28 @@ def _chunks(b: Book) -> list[tuple[str, str]]:
         # So a paragraph that is a claim in its own right gets its own vector.
         # Short fragments -- headings, list items, one-liners -- still pack, or
         # the index would triple for no gain.
-        if len(para.strip()) >= STANDALONE and cur:
-            parts.append((cur.strip(), _kind_at(b.body, max(cur_at - offset, 0))))
-            cur, cur_at = "", offset + (text.find(para) if para in text else cur_at)
-        if len(cur) + len(para) > CHUNK and cur:
-            parts.append((cur.strip(), _kind_at(b.body, max(cur_at - offset, 0))))
-            cur, cur_at = "", offset + text.index(para) if para in text else cur_at
+        # A heading is not a claim. Flushing in front of every long paragraph
+        # also cut the heading above it into a chunk of its own -- text no
+        # query is ever shaped like -- so a fragment shorter than GLUE stays
+        # with the paragraph it introduces.
+        if len(para.strip()) >= STANDALONE and len(cur.strip()) >= GLUE:
+            flush()
+        # Same guard on the size limit: it stranded '## The acts' as an
+        # 11-character chunk purely because the paragraph after it was large.
+        if len(cur) + len(para) > CHUNK and len(cur.strip()) >= GLUE:
+            flush()
         if not cur:
             cur_at = offset + (text.find(para) if para else 0)
         cur += para + "\n\n"
-    if cur.strip():
-        parts.append((cur.strip(), _kind_at(b.body, max(cur_at - offset, 0))))
+        # ...and it CLOSES the chunk as well as opening it. Flushing only in
+        # front of a standalone paragraph left it packed with every short
+        # paragraph that followed: 34 of the 60 chunks in this repository's
+        # example Library, the worst holding nine paragraphs in one vector.
+        # The claim still shared a vector with its neighbours, which is the
+        # exact defect the split was added to end.
+        if len(para.strip()) >= STANDALONE:
+            flush()
+    flush()
     return parts
 
 
@@ -125,10 +160,29 @@ INDEX_VERSION = 4
 def _load() -> dict:
     if INDEX.exists():
         try:
-            return json.loads(INDEX.read_text())
+            return json.loads(INDEX.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             pass
     return {}
+
+
+def book_hash(b: Book) -> str:
+    """The key that decides whether a Book needs re-embedding.
+
+    Frontmatter is part of it. Keyed on the body alone, flipping a Book to
+    `visibility: vault` left the cached vault=False in place and
+    `recall --no-vault` kept returning it. The facets join it for the same
+    reason: they are indexed text now, so retagging a Book's `about:` has to
+    invalidate its chunks or the new tie is unsearchable until something else
+    edits the body.
+
+    It lives here, and `doctor` imports it, because a second copy of this
+    expression is a second opinion about what "current" means -- and doctor's
+    job is to disagree with the index only when the index is actually wrong.
+    """
+    return hashlib.sha256(
+        f"{b.body}\x00{b.visibility}\x00{b.title}\x00{_facets(b)}"
+        .encode()).hexdigest()[:16]
 
 
 def reindex(verbose: bool = False) -> tuple[int, int]:
@@ -140,29 +194,33 @@ def reindex(verbose: bool = False) -> tuple[int, int]:
     seen, changed, same = set(), 0, 0
     for b in books():
         seen.add(b.slug)
-        # Frontmatter is part of the key. Keyed on the body alone, flipping a
-        # Book to `visibility: vault` left the cached vault=False in place and
-        # `recall --no-vault` kept returning it. (codex review, 2026-09-07)
-        # The facets join it for the same reason: they are indexed text now, so
-        # retagging a Book's `about:` has to invalidate its chunks or the new
-        # tie is unsearchable until something else edits the body.
-        h = hashlib.sha256(
-            f"{b.body}\x00{b.visibility}\x00{b.title}\x00{_facets(b)}"
-            .encode()).hexdigest()[:16]
-        if idx.get(b.slug, {}).get("hash") == h:
+        h = book_hash(b)
+        # `embedded` joins the hash, and a record without it is always retried.
+        # Keyed on the hash alone, ONE recall run with Ollama down wrote every
+        # chunk as vec=None NEXT TO A VALID HASH -- so when the server came
+        # back every Book matched its hash and was skipped as unchanged, and
+        # the Library stayed on keyword matching until a Book's text happened
+        # to change. `doctor` called the index current throughout, because it
+        # only asks whether the slug is present. Silent, and permanent.
+        cached = idx.get(b.slug, {})
+        if cached.get("hash") == h and cached.get("embedded"):
             same += 1
             continue
         vecs = []
         for c, kind in _chunks(b):
             v = _embed(c)
             vecs.append({"text": c, "vec": v, "kind": kind})
+        # The texts are still written when the server is down: keyword fallback
+        # reads them, so an unembedded index is degraded, not empty.
+        fvec = _embed(f"{b.title}\n{_facets(b)}")
+        embedded = bool(vecs) and all(v["vec"] for v in vecs) and bool(fvec)
         # The facets are scored, never shown. Folded into a chunk instead they
         # matched fine but every excerpt then opened with "notes owner", which is
         # index plumbing leaking into what a reader sees.
         ftext = _facets(b)
         idx[b.slug] = {"hash": h, "title": b.title, "vault": b.vault,
-                       "chunks": vecs, "facets": ftext,
-                       "fvec": _embed(f"{b.title}\n{ftext}")}
+                       "chunks": vecs, "facets": ftext, "fvec": fvec,
+                       "embedded": embedded}
         changed += 1
         if verbose:
             print(f"  indexed {b.slug} ({len(vecs)} chunks)")
@@ -170,7 +228,7 @@ def reindex(verbose: bool = False) -> tuple[int, int]:
         if slug != "__version__" and slug not in seen:
             del idx[slug]
     idx["__version__"] = INDEX_VERSION
-    INDEX.write_text(json.dumps(idx))
+    INDEX.write_text(json.dumps(idx), encoding="utf-8")
     return changed, same
 
 
@@ -180,12 +238,39 @@ def _cos(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+# Hangul, kana and han. These scripts agglutinate -- the particle is glued to
+# the noun -- so whole-token equality is the wrong test for them.
+_CJK = re.compile(r"[\uac00-\ud7a3\u3040-\u30ff\u4e00-\u9fff]")
+
+
+def _terms(q: str) -> list[str]:
+    # Two characters is a whole word in Korean ("\ubc38\ube0c"), where in English it
+    # is a stopword, so the length floor has to differ by script.
+    return [w for w in re.findall(r"\w+", q.lower())
+            if len(w) > 2 or (len(w) == 2 and _CJK.search(w))]
+
+
+def _count(w: str, t: str) -> int:
+    n = t.count(w)
+    if n or not _CJK.search(w):
+        return n
+    # "\ucee8\ud2b8\ub864\ub7ec\uac00" scored 0.0 against text reading
+    # "\ucee8\ud2b8\ub864\ub7ec\ub294" -- the same noun, a different particle. Trim the
+    # suffix to the longest stem that appears; two characters is the floor,
+    # below which a stem matches everything.
+    for cut in range(len(w) - 1, 1, -1):
+        n = t.count(w[:cut])
+        if n:
+            return n
+    return 0
+
+
 def _keyword(q: str, text: str) -> float:
-    words = [w for w in re.findall(r"\w+", q.lower()) if len(w) > 2]
+    words = _terms(q)
     if not words:
         return 0.0
     t = text.lower()
-    return sum(t.count(w) for w in words) / (len(words) * (1 + len(t) / 2000))
+    return sum(_count(w, t) for w in words) / (len(words) * (1 + len(t) / 2000))
 
 
 # A curated fact outranks an observation at equal similarity. Not a filter --
