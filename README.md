@@ -55,9 +55,16 @@ or, worse, persisting as an instruction.
 
 **2. The cost grows without bound.** An index loaded every session is a tax you
 pay per session, and it grows linearly with everything you have ever recorded.
-MEMEX injects a fixed block — where the record is, what is unresolved, what
-earns an entry — and retrieves the rest **on demand**, by meaning. The Library
-can grow indefinitely without the session cost moving.
+MEMEX separates the two: the Library is *meant* to grow — Bush's §2 is explicit
+that storage stops being the bottleneck — while what a session pays should be
+capped and the rest retrieved **on demand**, by meaning.
+
+Stated honestly, this repo has not finished that job. The retrieval half is
+real. The injection half is not: the session block is part fixed and part whole
+files pasted in, and those files grow. Measured on the Library it was built for,
+about a third of the injection was genuinely fixed and the rest was not. Capping
+it behind a single asserted constant is the next piece of work, not a property
+to claim today.
 
 **3. It stores conclusions; this stores reasoning.** Built-in memory is a flat
 set of facts. There is no way to ask it *why* something is the way it is, because
