@@ -34,6 +34,44 @@ MEMEX is built to keep that. Not a log, not a summary, not a search index over
 your chat history: **an ordered record of what is known and how it came to be
 known**, in plain markdown, on your own disk.
 
+## Why not your agent's built-in memory?
+
+Most coding agents now ship one: the agent writes notes about you to a file, and
+an index of them is loaded at the start of every session. It is genuinely useful,
+and it is a different thing from this. Three differences decide it.
+
+**1. Nothing retires.** Built-in memory has no supersession mechanism. When a
+fact stops being true, there is no way to say so — the entry sits there being
+injected into every session, and nothing records that it was ever wrong. This is
+not hypothetical: on the machine this was built for, the memory index carried two
+entries flagged at its highest priority, one instructing every session to run a
+linter that had been uninstalled weeks earlier, and one asserting the search
+index held zero embeddings when every chunk in it had a vector.
+
+A MEMEX Book has two layers for exactly this. A correction replaces the claim
+above the line by quoting it exactly, and *why it was replaced* stays below the
+line, append-only. The old claim remains legible as history instead of vanishing
+or, worse, persisting as an instruction.
+
+**2. The cost grows without bound.** An index loaded every session is a tax you
+pay per session, and it grows linearly with everything you have ever recorded.
+MEMEX injects a fixed block — where the record is, what is unresolved, what
+earns an entry — and retrieves the rest **on demand**, by meaning. The Library
+can grow indefinitely without the session cost moving.
+
+**3. It stores conclusions; this stores reasoning.** Built-in memory is a flat
+set of facts. There is no way to ask it *why* something is the way it is, because
+the route was never recorded — only the destination. That is what `trails/` is,
+and it has no equivalent in a notes file.
+
+There is a fourth, and it is the one people argue about: **who writes.** Built-in
+memory is written by the agent, on its own judgement, with nobody saying yes. That
+is the add-everything regime, and it is the one the numbers above rank last.
+
+Built-in memory is the agent's working notes about you. This is your record —
+which is why it is plain markdown on your own disk, and why it outlives the
+agent that helped you write it.
+
 ## What Bush actually proposed
 
 Bush names four operations in §7. Almost every "agent memory" system implements
@@ -267,7 +305,9 @@ is merely followed).
 
 `DESIGN.md` goes deeper: the retrieval pipeline and how to verify it, the
 Scribe's five recursion guards, and the durability pattern that replaces a
-remote.
+remote. `CONNECTORS.md` is a design note, **not a feature** — what it would take
+to feed the Library from a source outside the conversation, and the constraints
+that decide it.
 
 ## Quickstart
 
