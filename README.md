@@ -11,26 +11,192 @@ a cache you can delete and rebuild.
 
 ---
 
-## The problem
+## Why this exists
 
-An agent that forgets everything between sessions makes its user the memory.
-The usual fix — write the conversation into a vector store and retrieve it
-later — makes that worse, not better. Storing more is not knowing more.
+Every session with an agent ends and takes its context with it. The next one
+starts blind, so **you** become the memory — re-explaining the same decisions,
+re-deriving the same constraints, and slowly discovering that the most valuable
+thing in the work is the part nobody wrote down.
 
-The measured result across the agent-memory literature is consistent: adding
-everything to memory scores *worse* than a frozen, hand-picked shelf, and both
-lose badly to strict curation. Volume is not the win. **Admission is.**
+The usual fix is to pour transcripts into a vector store. That makes it worse.
+Measured across the agent-memory literature: adding everything scores **13.05%**,
+a frozen hand-picked shelf **16.75%**, and strict curation **38.50%**. Storing
+more is not knowing more.
 
-So MEMEX inverts the usual design. Capture is profligate and lives outside the
-Library. What enters the Library is decided one sentence at a time, by a human,
-and nothing else can put it there.
+And volume is not even the real loss. What actually goes missing is **why**. A
+year from now the code still says what it does, git still says what changed —
+but nothing says why that turn was taken instead of the obvious one, or what
+was tried first and abandoned, or which of two contradictory results superseded
+the other. That reasoning is the expensive part, it exists only in someone's
+head, and it evaporates first.
 
-## The core rule
+MEMEX is built to keep that. Not a log, not a summary, not a search index over
+your chat history: **an ordered record of what is known and how it came to be
+known**, in plain markdown, on your own disk.
 
-**Nothing enters a Book except through the Button.**
+## What Bush actually proposed
 
-The Button is the moment the owner is shown *one exact sentence* and *one exact
-destination*, and says yes:
+Bush names four operations in §7. Almost every "agent memory" system implements
+the first two and stops.
+
+| §7 operation | the question | here |
+|---|---|---|
+| **SEARCH** | what matches this query? | `memex recall` — local embeddings, layer-weighted |
+| **INDEX** | where is this stored? | the shelf **is** the Book's `type:`; everything else is a facet |
+| **LINK** | what else is related? | `[[slug]]` anywhere in a Book. Free, no ceremony |
+| **TRAIL** | **what path through knowledge is useful?** | `brain/trails/*.md` — ordered, reasoned routes |
+
+> "The process of tying two items together is the important thing."
+> — Bush, §7
+
+The fourth is the one that makes a memex a memex rather than a large private
+library, and it is the one that gets skipped.
+
+---
+
+## Trails — the point of the whole thing
+
+A **link** says two Books are related. A **trail** is an ordered route over
+those links where **every step says why that turn was taken**. Links are cheap
+and made freely. A trail is the reasoning, made explicit and kept.
+
+A trail is a file. This is the record itself — four steps, each naming what the
+step before it forced:
+
+```markdown
+## Route
+
+1. **A greenhouse needs a decision, not a clock.** — 2026-09-09
+   A fixed schedule waters on time rather than on need, and the pots that need
+   it least get the same water as the pots that need it most.
+   → [[projects/greenhouse]]
+
+2. **So the decision needed a measurement it could not be fooled by.** — 2026-09-09
+   A single sensor briefly touching dry air during a top-up fired the pump twice
+   in four minutes. Deciding on the trailing-hour median makes a one-sample
+   excursion unable to move the decision.
+   → [[research/germination-trial]]
+
+3. **And the measurement had to be trialled against the thing it replaced.** — 2026-09-06
+   Germination reached 67.3% under the median against 29.4% under the latest
+   reading, and water use did not rise with it.
+   → [[writing/benchmark-report]]
+
+4. **The trap that survives the project belongs to the machine.** — 2026-09-09
+   The cron PATH and stale-binary traps are properties of the host, and the next
+   project to run there will hit them identically.
+   → [[infra/home-server]]
+```
+
+Read that and you have the whole argument, in the order each decision forced the
+next. No commit log gives you this. No summary of a chat gives you this.
+
+And you walk it from the terminal:
+
+```
+$ memex trail building-the-greenhouse
+
+trails/building-the-greenhouse — Why the greenhouse controller is shaped the way it is
+
+  1. A greenhouse needs a decision, not a clock.   — 2026-09-09
+     A fixed schedule waters on time rather than on need, and the pots that need i…
+     → projects/greenhouse
+     │
+  2. So the decision needed a measurement it could not be fooled by.   — 2026-09-09
+     A single sensor briefly touching dry air during a top-up fired the pump twice…
+     → research/germination-trial
+     │
+  3. And the measurement had to be trialled against the thing it replaced.   — 2026-09-06
+     Germination reached 67.3% under the median against 29.4% under the latest rea…
+     → writing/benchmark-report
+     │
+  4. The trap that survives the project belongs to the machine.   — 2026-09-09
+     The cron PATH and the stale-binary traps are properties of the host, and the …
+     → infra/home-server
+```
+
+(The walk view truncates each reason at 78 characters — the file is the record,
+the walk is an index of it.)
+
+Four properties make it work:
+
+- **Order is logical, not chronological.** Note step 3 is dated *earlier* than
+  step 2. Dates ride along; they do not decide the sequence. A trail sorted by
+  date is a chronology wearing a trail's clothes.
+- **A reason is never invented.** Steps are quoted from prose already written in
+  the Books. Where the record holds no reason, the step is **dropped, not
+  guessed** — a plausible-sounding reason a model made up is worse than no step.
+- **Steps are append-only.** A wrong step is answered by a later one, never
+  rewritten. You can see how the thinking changed.
+- **A Book holds no route.** It is *reached* by them. Bush §7: the item stays
+  where it is; what changes is the path through it.
+
+```
+$ memex trail --through infra/home-server
+1 trail(s) through infra/home-server:
+  trails/building-the-greenhouse  step 4: The trap that survives the project belongs to the machine.
+
+$ memex trail --orphans          # Books no route reaches — the real backlog
+$ memex trail --unexplained      # ties nobody has given a reason yet
+```
+
+Those last two are the honest metric. Counting Books tells you nothing: a Book
+can sit in the Library, perfectly indexed, and be on nobody's path.
+
+---
+
+## The record keeps itself
+
+A record you have to remember to maintain is a record you will stop
+maintaining. Four things run without being asked.
+
+**At session start** — the Library announces itself: where it is, how to search
+it, what is unresolved, and the rule for what is worth writing down. The agent
+never has to be told the record exists.
+
+**At session end** — a background reader (the *Scribe*) reads the finished
+transcript and extracts checkable statements. It **cannot write a Book** — that
+is refused at the function level, not merely discouraged — so it queues what it
+found and waits.
+
+**Every 24 hours** — a pass over the whole Library looks for links with one end
+already on a trail and the other not, and proposes the step that would join
+them. It reads only the Library, **calls no model**, and costs nothing to run.
+It proposes; it never writes.
+
+**At the end of every turn** — anything queued and unanswered **refuses to let
+the turn end**. This is the load-bearing one. A queue nobody is forced to look
+at is a backlog, and a backlog is how a dozen unread proposals accumulate in a
+day.
+
+```
+$ memex doctor
+  ok   links all resolve
+  ok   every Book parses
+  ok   search index current
+  ok   Books hold fact only
+  ok   prompt offers only ops we accept
+  ----------------------------------------------------
+  10 Books on 9 shelves, 2 vault
+  1 trails; 6 Books on no route
+  14 ties no trail explains
+  0 candidates waiting
+```
+
+Every one of those checks exists because the thing it looks for actually went
+wrong: a rename that left dead links, a Book written and never reindexed, a
+prompt that drifted from what the code accepts.
+
+---
+
+## What gets in, and who decides
+
+Capture is profligate; **admission is strict**. That asymmetry is the design.
+Transcripts keep everything and live outside the Library. What enters a Book is
+decided one sentence at a time.
+
+**Nothing enters a Book except through the Button** — the moment the owner is
+shown one exact sentence and one exact destination, and says yes:
 
 ```
 Should I write "The scheduler waters on a trailing-hour median, not the
@@ -39,52 +205,26 @@ latest reading" on projects/greenhouse?
   Yes  ·  Reword  ·  Different Book  ·  No
 ```
 
-Not an abstract card saying "watering logic". Nobody can agree to a summary of a
-fact they have not read.
+Not an abstract card saying "watering logic". Nobody can agree to a summary of
+a fact they have not read.
 
-This comes straight from Bush §7 — the memex ties two items together *when the
-researcher presses a button*. Nothing ties itself. Bush got the human decision
-for free, because his machine could not author anything. Ours can, so the rule
-has to be stated and enforced in code: the background writer is **refused at the
-function level** from creating a Book or writing a fact. It can only queue.
+A **TIE** Button — a Book and the route it would join — is asked before any
+fact, because a fact with no route is in the Library but on nobody's path.
 
-## Bush's four operations, and what implements each
+And *what may be put in front of you* is not the agent's taste either. A closed
+list of six triggers lives in `memex/criterion.py` and is injected into every
+session and into the Scribe's prompt: a rule stated, a measurement taken, a
+cause established, a source that changed a decision, a capability boundary
+moved, a recorded claim contradicted. Nothing else qualifies. Expected rate is
+2–5 a session — **zero when six things were established is a miss, and a dozen
+is drift**, and both are visible.
 
-| §7 operation | the question it answers | here |
-|---|---|---|
-| **SEARCH** | what matches this query? | `memex recall` — local embeddings, cosine over every chunk, layer-weighted |
-| **INDEX** | where is this stored? | `brain/CLASSIFICATION.md` — the shelf **is** the Book's `type:`; everything else is a facet |
-| **LINK** | what else is related? | `[[slug]]` anywhere in a Book. Free, no permission, no ceremony |
-| **TRAIL** | what path is useful? | `brain/trails/*.md` — ordered steps, each naming what the step before it forced |
+Bush got the human decision for free; his machine could not author anything.
+Ours can, so the rule had to be written down and put in code.
 
-The fourth is the one that makes this a memex rather than a large private
-library, and it is the one almost every "agent memory" system skips.
-
-## What is in this repository
-
-```
-memex/          the system — 13 modules, no dependencies beyond PyYAML
-bin/            memex, memex-daily, library
-brain/          an EXAMPLE Library: 10 Books on 9 shelves, plus the rules
-skills/         the write-path skill an agent follows to press the Button
-scribe/         the prompt the background reader runs under
-tests/          1,349 lines, ~270 checks, no network required
-```
-
-**`brain/` here is a worked example, about a fictional greenhouse controller.**
-It is not anybody's Library. See "What this repo is not", below.
-
-The rules are the interesting part of `brain/`:
-
-- **`RESOLVER.md`** — the decision tree. Which visibility, then which type.
-- **`CLASSIFICATION.md`** — one shelf per Book, many facets per Book, and why
-  faceted classification (Ranganathan) rather than enumerative (Dewey).
-- **`schema.md`** — the Book contract, and the honest list of what a machine
-  actually checks versus what is merely followed.
+---
 
 ## How a Book is shaped
-
-Two layers, split by a horizontal rule:
 
 ```markdown
 ---
@@ -108,11 +248,31 @@ replaces. That only works if facts are **points, not paragraphs** — a claim
 buried in prose cannot be corrected without rewriting three claims that were
 fine.
 
+## What is in this repository
+
+```
+memex/          the system — 13 modules, no dependency beyond PyYAML
+bin/            memex, memex-daily, library
+brain/          an EXAMPLE Library: 10 Books on 9 shelves, plus the rules
+skills/         the write-path an agent follows
+scribe/         the prompt the background reader runs under
+tests/          1,349 lines, ~274 checks, no network required
+```
+
+The rules in `brain/` are the transferable part: **`RESOLVER.md`** (the decision
+tree), **`CLASSIFICATION.md`** (one shelf per Book, many facets per Book, and
+why faceted classification rather than enumerative), and **`schema.md`** (the
+Book contract, with an honest list of what a machine actually checks versus what
+is merely followed).
+
+`DESIGN.md` goes deeper: the retrieval pipeline and how to verify it, the
+Scribe's five recursion guards, and the durability pattern that replaces a
+remote.
+
 ## Quickstart
 
-Requires Python 3.11+ and PyYAML. Semantic recall additionally wants a local
-[Ollama](https://ollama.com) with an embedding model; without it, recall falls
-back to keyword matching.
+Python 3.11+ and PyYAML. Semantic recall additionally wants a local
+[Ollama](https://ollama.com); without it, recall falls back to keyword matching.
 
 ```bash
 git clone <this repo> memex && cd memex
@@ -126,11 +286,10 @@ export MEMEX_TZ=Europe/Berlin # dates in Books use the owner's day
 ./bin/memex doctor
 ```
 
-`memex daily` on the shipped example proposes **nothing**, and reports a
-backlog of ties instead. That is the rule working: a step's reason is quoted
-from prose already written, and where the record holds none the step is dropped
-rather than guessed. Write a sentence that says *why* two Books belong together
-and the next pass will offer it.
+`memex daily` on the shipped example proposes **nothing** and reports a backlog
+instead. That is the rule working: a step's reason is quoted from prose already
+written, and where none exists the step is dropped rather than guessed. Write a
+sentence saying *why* two Books belong together and the next pass will offer it.
 
 Then make it yours: empty `brain/`, rewrite `CLASSIFICATION.md`'s controlled
 vocabulary between the `about-terms` markers, and write your first Book.
@@ -140,79 +299,58 @@ vocabulary between the `about-terms` markers, and write your first Book.
 | | |
 |---|---|
 | `memex recall "<question>"` | semantic search over every Book |
-| `memex trail [name]` | every route, or walk one in order with reasons |
+| `memex trail [name]` | every route, or walk one with its reasons |
 | `memex trail --through <book>` | which routes reach this Book |
-| `memex trail --orphans` | Books no route reaches |
-| `memex open` | what is waiting on the owner's word |
-| `memex note <book> "<text>" --agreed` | write a fact — **only after a Button** |
+| `memex trail --orphans` / `--unexplained` | the backlog that actually matters |
+| `memex open` | what is waiting on your word |
+| `memex note <book> "<text>" --agreed` | write a fact — after a Button |
 | `memex tie <trail> <book> --why "…"` | add a step to a route |
-| `memex new <shelf/slug> …` | create a Book |
-| `memex daily` | the 24-hour pass: propose trail steps. **Calls no model.** |
-| `memex doctor` | broken links, orphans, index freshness, queue depth |
-| `memex reindex` | rebuild the recall index |
+| `memex daily` | the 24-hour pass. Calls no model |
+| `memex doctor` | links, parsing, index, queue depth |
 
 ### Hooks (optional)
 
 MEMEX runs standalone. Wired into a harness that supports hooks, three events
-make it self-maintaining:
+make it self-maintaining — see `hooks.example.json`.
 
-| event | command | what it does |
-|---|---|---|
-| session start | `memex start` | injects the rules, the owner's preferences, and what is open |
-| session end | `memex scribe --pending` | reads the finished transcript, queues candidates |
-| turn end | `memex pending --nudge` | **exits 2** and refuses to end the turn while something queued is unasked |
-
-The third one is the load-bearing one. A queue nobody is forced to look at is a
-backlog, and a backlog is how nine unread proposals accumulate in a day.
-
-## Two Buttons, because there are two acts
-
-| | **FACT** | **TIE** |
-|---|---|---|
-| offers | a sentence and a destination | a Book and the route it would join |
-| the question | *Should I write "…" on `shelf/book`?* | *Add `book` to `trail` as a step, because "…"?* |
-| the reason is | composed from what was established | **quoted, never composed** |
-| asked | when it is noticed | **first** — before any fact |
-
-Ties are asked first because a fact with no route is in the Library but on
-nobody's path. And a tie's reason is quoted from prose already written: where
-the record holds no reason, the step is **dropped rather than guessed**.
+| event | command |
+|---|---|
+| session start | `memex start` |
+| session end | `memex scribe --pending` |
+| turn end | `memex pending --nudge` — exits 2, refuses to end the turn |
 
 ## What is honestly weak
 
-Stated here rather than discovered later:
-
 - **`vault` is policy, not a sandbox.** Two things are mechanically enforced:
-  whole-file writes are refused outside `trails/`, and paths escaping `brain/`
-  are refused. Everything else holds because the agent follows it.
+  whole-file writes refused outside `trails/`, paths escaping `brain/` refused.
+  Everything else holds because the agent follows it.
 - **Recall degrades silently.** If the embedder is unreachable, search falls
-  back to keyword matching without saying so. If results suddenly feel literal,
-  check the embedder first.
-- **`doctor`'s index check verifies presence, not freshness.** A Book edited
+  back to keyword matching without saying so.
+- **`doctor` checks the index for presence, not freshness.** A Book edited
   without a reindex still reads green.
-- **No hybrid lexical channel.** Exact identifiers — a flag name, a symbol —
-  are hard to retrieve by meaning alone.
-- **The daily pass proposes; it never writes.** By design, but it means an
-  unattended machine accumulates a backlog rather than a Library.
+- **No hybrid lexical channel.** Exact identifiers are hard to retrieve by
+  meaning alone.
+- **The transcript store has no retrieval.** Bush's store is consultable; this
+  one is not. Fixing it by bulk-indexing would contradict the 38.50% result
+  above, so it stays open on purpose.
 
 ## What this repo is not
 
 **It is not anybody's Library.** The Books under `brain/` are worked examples
-written for publication, about a fictional greenhouse.
+written for publication, about a fictional greenhouse controller.
 
 A real Library holds identity, relationships, health, finances and third-party
 material about people who never agreed to leave the machine that holds it. That
 belongs on one machine, backed up encrypted, with no code-host remote — the
-`vault` label exists precisely to mark what the exits must refuse, and a public
-repository is an exit.
+`vault` label exists to mark what the exits must refuse, and a public repository
+is an exit.
 
 Durability without a remote is a solved problem, and it is not a private repo:
-nightly `gpg` symmetric encryption to two independent object stores, with the
-passphrase off the machine. `DESIGN.md` §7 has the pattern and the three checks
-that prove it works.
+nightly asymmetric `gpg` to two independent object stores, private key off the
+machine. `DESIGN.md` §7 has the pattern and the three checks that prove it works.
 
-This repository was therefore **written fresh for publication rather than
-exported and filtered.** Filtering only has to fail once.
+This repository was **written fresh for publication rather than exported and
+filtered.** Filtering only has to fail once.
 
 ## License
 
