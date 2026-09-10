@@ -206,6 +206,11 @@ belongs on one machine, backed up encrypted, with no code-host remote — the
 `vault` label exists precisely to mark what the exits must refuse, and a public
 repository is an exit.
 
+Durability without a remote is a solved problem, and it is not a private repo:
+nightly `gpg` symmetric encryption to two independent object stores, with the
+passphrase off the machine. `DESIGN.md` §7 has the pattern and the three checks
+that prove it works.
+
 This repository was therefore **written fresh for publication rather than
 exported and filtered.** Filtering only has to fail once.
 

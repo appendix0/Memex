@@ -248,7 +248,56 @@ is a strong guard only while the geography holds.
 | §7.7 | trails transfer to a reader who was not there | every step names its reason |
 | §8 | "trails can become shared knowledge artifacts" | sharing is a property of every trail, not a tier above them |
 
-## 7. Where the code lives
+## 7. Durability — how a local-only Library survives
+
+The Library has no remote, by design. That trades one risk for another: no code
+host means no off-machine copy, and a disk is a single point of failure. The
+answer is not a remote. It is an encrypted archive.
+
+```
+git, on the machine          →  history
+nightly:  tar the workspace  →  gpg --symmetric AES-256
+                             →  upload to TWO independent S3-compatible stores
+                             →  prune to a rolling window of snapshots
+```
+
+Four rules make it a backup rather than a gesture:
+
+- **Encrypt before it leaves the machine**, never after. The provider must only
+  ever hold ciphertext.
+- **The passphrase lives off the machine** — a password manager, and on paper.
+  A passphrase stored on the box being backed up protects nothing.
+- **Two providers, independently credentialed.** One provider is an availability
+  assumption, not a backup.
+- **The restore runbook is stored *unencrypted* in both buckets, on purpose,**
+  because it contains no secrets. A runbook you cannot read until after you have
+  restored is not a runbook.
+
+### The distinction the whole design rests on
+
+**Encrypted-at-rest in a bucket is not the same as a public source remote.** The
+first is a backup: the provider holds bytes it cannot read. The second is
+publication. Confusing the two is exactly how a private Library ends up on a
+code host "just for backup" — see `ACCESS_POLICY.md`.
+
+### Verify it; do not believe it
+
+An untested backup is a belief. Three checks, cheapest first:
+
+1. **Count the objects** in each bucket and compare against the retention
+   window. A leg that silently stopped uploading looks identical to one that
+   never ran.
+2. **Grep the upload log for warnings**, per leg. "No errors reported" is not
+   the same as "errors were checked for".
+3. **Restore into a scratch directory** and diff it against the live Library.
+   This is the only check that proves anything; the first two only tell you
+   where to look.
+
+Two failure modes worth naming because they are invisible until they matter: a
+copy on the same disk is not a backup, and an access key that has never been
+rotated is a standing credential with no expiry.
+
+## 8. Where the code lives
 
 | module | what it owns |
 |---|---|
