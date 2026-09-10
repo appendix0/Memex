@@ -256,7 +256,7 @@ answer is not a remote. It is an encrypted archive.
 
 ```
 git, on the machine          →  history
-nightly:  tar the workspace  →  gpg --symmetric AES-256
+nightly:  tar the workspace  →  gpg --encrypt --recipient <key>   (asymmetric)
                              →  upload to TWO independent S3-compatible stores
                              →  prune to a rolling window of snapshots
 ```
@@ -265,8 +265,11 @@ Four rules make it a backup rather than a gesture:
 
 - **Encrypt before it leaves the machine**, never after. The provider must only
   ever hold ciphertext.
-- **The passphrase lives off the machine** — a password manager, and on paper.
-  A passphrase stored on the box being backed up protects nothing.
+- **Encrypt to a public key, and keep the private key off the machine.** This is
+  the rule worth changing an existing setup for: with a symmetric passphrase, a
+  box that can write its backups can also read every one of them, so compromising
+  the machine compromises its whole history. Asymmetric splits that — the machine
+  can encrypt and cannot decrypt.
 - **Two providers, independently credentialed.** One provider is an availability
   assumption, not a backup.
 - **The restore runbook is stored *unencrypted* in both buckets, on purpose,**
@@ -292,6 +295,12 @@ An untested backup is a belief. Three checks, cheapest first:
 3. **Restore into a scratch directory** and diff it against the live Library.
    This is the only check that proves anything; the first two only tell you
    where to look.
+
+And one check specific to encrypting asymmetrically: **assert the archive was
+encrypted to the key you meant**, by reading the packet header back before
+upload. If the keyring changes underneath the job, `gpg` will cheerfully encrypt
+to a different recipient and exit 0 — leaving a backup nobody holds the key for,
+which looks exactly like a good one until the day it is needed.
 
 Two failure modes worth naming because they are invisible until they matter: a
 copy on the same disk is not a backup, and an access key that has never been
